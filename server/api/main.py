@@ -71,7 +71,12 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS middleware - configured from environment variable
 # Default allows localhost for development
 # Production should set ALLOWED_ORIGINS="https://yourdomain.com,https://app.yourdomain.com"
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+default_origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://risk-frontend-snowy.vercel.app",
+]
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", ",".join(default_origins)).split(",")
 print(f"[INFO] CORS configured for origins: {ALLOWED_ORIGINS}")
 
 app.add_middleware(
