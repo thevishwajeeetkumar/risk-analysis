@@ -54,7 +54,7 @@ SEGMENT_COLUMNS = [
     "person_gender",
     "person_education",
     "person_home_ownership",
-    "age_group"  # Added age segmentation
+    "age_group",  # Added age segmentation
 ]
 
 # Risk thresholds for recommendations
@@ -69,6 +69,21 @@ MIN_SEGMENT_SIZE = int(os.getenv("MIN_SEGMENT_SIZE", "1"))
 RBAC_AUTO_GRANT_DEFAULTS = os.getenv("RBAC_AUTO_GRANT_DEFAULTS", "true").lower() == "true"
 # Enable fuzzy matching for segment permissions (handles case/spelling variations)
 RBAC_FUZZY_MATCHING = os.getenv("RBAC_FUZZY_MATCHING", "true").lower() == "true"
+
+_auto_grant_env = os.getenv("RBAC_AUTO_GRANT_SEGMENTS")
+if _auto_grant_env:
+    RBAC_AUTO_GRANT_SEGMENTS = {
+        value.strip()
+        for value in _auto_grant_env.split(",")
+        if value.strip()
+    }
+else:
+    RBAC_AUTO_GRANT_SEGMENTS = {
+        "loan_intent",
+        "person_gender",
+        "person_education",
+        "person_home_ownership",
+    }
 
 # Pinecone Configuration
 # Note: Pinecone serverless (2025-04 API) does not support the embed.model parameter.

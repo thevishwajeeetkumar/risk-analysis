@@ -16,7 +16,12 @@ from db.database import get_db
 from db import crud
 from db.models import User, ECLSegmentCalculation, Permission
 from auth.auth import get_current_user
-from core.config import SEGMENT_COLUMNS, RBAC_AUTO_GRANT_DEFAULTS, RBAC_FUZZY_MATCHING
+from core.config import (
+    SEGMENT_COLUMNS,
+    RBAC_AUTO_GRANT_DEFAULTS,
+    RBAC_FUZZY_MATCHING,
+    RBAC_AUTO_GRANT_SEGMENTS,
+)
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -174,7 +179,7 @@ async def filter_segments_dict_by_permissions(
         return segments_dict
     
     # Define core segments that Analysts should have default read access to
-    CORE_SEGMENTS = set(SEGMENT_COLUMNS)  # ["loan_intent", "person_gender", etc.]
+    CORE_SEGMENTS = set(RBAC_AUTO_GRANT_SEGMENTS)
     
     # For Analysts, filter based on permissions with fuzzy matching and defaults
     filtered_dict = {}
@@ -209,7 +214,12 @@ async def filter_segments_dict_by_permissions(
             # Continue without permission if DB error
         
         # Fallback: Auto-grant defaults for Analysts on core segments (if enabled)
-        if not has_perm and RBAC_AUTO_GRANT_DEFAULTS and user.role == "Analyst" and segment_type in CORE_SEGMENTS:
+        if (
+            not has_perm
+            and RBAC_AUTO_GRANT_DEFAULTS
+            and user.role == "Analyst"
+            and segment_type in CORE_SEGMENTS
+        ):
             logger.info(f"[RBAC] Auto-granting default 'read' for {user.username} on core segment '{segment_type}'")
             try:
                 # Insert new permission
