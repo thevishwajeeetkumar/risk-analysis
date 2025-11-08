@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Callable
 from fastapi import Depends, HTTPException, status
 from sqlalchemy import select, func, insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from db.database import get_db
 from db import crud
@@ -222,12 +223,34 @@ async def filter_segments_dict_by_permissions(
                 await db.commit()
                 has_perm = True
                 logger.info(f"[RBAC] Successfully auto-granted permission for {segment_type}")
-            except Exception as e:
-                # Handle duplicate key or other insert errors gracefully
-                logger.warning(f"[RBAC] Failed to auto-grant {segment_type} for {user.username}: {e}")
+            except IntegrityError as e:
                 await db.rollback()
-                # Optimistically allow access anyway (permission might already exist)
-                has_perm = True
+                message = str(e.orig) if getattr(e, "orig", None) else str(e)
+                if "permissions_segment_name_check" in message:
+                    logger.warning(
+                        "[RBAC] Auto-grant blocked by constraint for %s on segment '%s'. "
+                        "Verify database CHECK constraint allows this segment.",
+                        user.username,
+                        segment_type,
+                    )
+                    has_perm = False
+                else:
+                    logger.warning(
+                        "[RBAC] Integrity error auto-granting %s for %s: %s. Assuming permission exists.",
+                        segment_type,
+                        user.username,
+                        message,
+                    )
+                    has_perm = True
+            except Exception as e:
+                logger.warning(
+                    "[RBAC] Failed to auto-grant %s for %s: %s",
+                    segment_type,
+                    user.username,
+                    e,
+                )
+                await db.rollback()
+                has_perm = False
         
         if has_perm:
             filtered_dict[segment_type] = segment_data
