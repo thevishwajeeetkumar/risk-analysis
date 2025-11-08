@@ -1,0 +1,41 @@
+# Core Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# FastAPI & Web Server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+slowapi>=0.1.9  # Rate limiting for FastAPI
+
+# LangChain & RAG
+langchain~=1.0
+langchain-core~=1.0
+langchain-openai~=1.0
+langchain-text-splitters~=1.0
+langchain-pinecone~=0.2
+pinecone>=7
+python-dotenv
+
+
+# OpenAI
+openai>=1.6.0
+
+# Database & ORM
+sqlalchemy[asyncio]>=2.0.0
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9  # For synchronous fallback
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+email-validator>=2.0.0  # For Pydantic EmailStr
+
+# Utilities
+python-dotenv>=1.0.0
+openpyxl>=3.1.0  # for XLSX file support
+langdetect>=1.0.9
+nest-asyncio>=1.6.0  # For nested async event loops in RAG
+
+# Optional Development
+pytest>=7.4.0
