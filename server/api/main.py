@@ -262,13 +262,19 @@ async def query_ecl(
         - Read permissions for relevant segments
     """
     try:
+        # Extract user attributes IMMEDIATELY to avoid accessing detached User object
+        # This prevents greenlet errors when User object is from a different session
+        user_id = current_user.user_id
+        username = current_user.username
+        user_role = current_user.role
+        
         # Get RAG engine
         rag_engine = get_rag_engine()
         
         # Query segments
         rag_result = rag_engine.query_segments(
             query=payload.query,
-            username=current_user.username,
+            username=username,
             file_id=payload.file_id,
             top_k=payload.top_k
         )
@@ -276,7 +282,7 @@ async def query_ecl(
         # Log RAG retrieval results
         rag_segment_types = set(s.get('segment_type') for s in rag_result['segments'] if s.get('segment_type'))
         logger.info(f"[RAG] Retrieved {len(rag_result['segments'])} segments, types: {rag_segment_types}")
-        logger.info(f"[USER] {current_user.username} (role: {current_user.role}, ID: {current_user.user_id}) querying file: {payload.file_id or 'all'}")
+        logger.info(f"[USER] {username} (role: {user_role}, ID: {user_id}) querying file: {payload.file_id or 'all'}")
         
         # Apply RBAC filtering to segments
         # Group segments by their segment type for filtering
@@ -291,6 +297,7 @@ async def query_ecl(
         logger.info(f"[RBAC] Pre-filter: {len(segments_by_type)} segment types with {len(rag_result['segments'])} total segments")
         
         # Filter segments based on user permissions
+        # Pass extracted attributes to avoid accessing detached User object
         filtered_segments_dict = await filter_segments_dict_by_permissions(
             current_user,
             segments_by_type,
@@ -364,31 +371,49 @@ async def get_segments(
         - Read permissions for requested segments
     """
     try:
-        from auth.rbac import filter_ecl_by_permissions
+        from auth.rbac import check_segment_permission
         from db.transformers import ecl_record_to_segment_dict
+        
+        # Extract user attributes immediately to avoid accessing detached User object
+        user_id = current_user.user_id
+        user_role = current_user.role
         
         # Query ECL calculations from database
         ecl_records = await crud.get_ecl_by_user(
             db,
-            user_id=current_user.user_id,
+            user_id=user_id,
             file_id=file_id,
             segment_type=segment_type,
             skip=skip,
             limit=limit
         )
         
-        # Apply RBAC filtering
-        filtered_ecl_records = await filter_ecl_by_permissions(
-            current_user,
-            ecl_records,
-            db
-        )
-        
-        # Convert to response format
+        # Convert to dicts IMMEDIATELY while session is still active
+        # This prevents greenlet errors when accessing attributes after session closes
         segments_data = []
-        for ecl_record in filtered_ecl_records:
+        for ecl_record in ecl_records:
+            # Convert to dict while session is active
             segment_dict = ecl_record_to_segment_dict(ecl_record)
             segments_data.append(segment_dict)
+        
+        # Apply RBAC filtering on dicts (more efficient and avoids session issues)
+        # CROs see all segments, Analysts need permission checks
+        if user_role != "CRO":
+            from db import crud
+            filtered_segments_data = []
+            for segment_dict in segments_data:
+                segment_type_name = segment_dict.get("segment_type")
+                if segment_type_name:
+                    # Use crud.has_permission directly to avoid accessing detached User object
+                    has_permission = await crud.has_permission(
+                        db,
+                        user_id,
+                        segment_type_name,
+                        "read"
+                    )
+                    if has_permission:
+                        filtered_segments_data.append(segment_dict)
+            segments_data = filtered_segments_data
         
         # Get total count (before pagination)
         # For now, we'll use the filtered count as total

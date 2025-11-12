@@ -297,7 +297,12 @@ async def get_ecl_by_user(
     skip: int = 0,
     limit: int = 100
 ) -> List[ECLSegmentCalculation]:
-    """Get ECL calculations by user with optional filters."""
+    """
+    Get ECL calculations by user with optional filters.
+    
+    Returns ORM objects. Access all needed attributes within the session context
+    to avoid greenlet errors. Consider converting to dicts immediately after query.
+    """
     query = select(ECLSegmentCalculation).where(
         ECLSegmentCalculation.user_id == user_id
     )
@@ -314,7 +319,26 @@ async def get_ecl_by_user(
     )
     
     result = await db.execute(query)
-    return result.scalars().all()
+    ecl_records = result.scalars().all()
+    
+    # Explicitly access all attributes while session is active to prevent
+    # greenlet errors when objects are accessed later
+    for record in ecl_records:
+        # Access all attributes to ensure they're loaded before session closes
+        _ = (
+            record.ecl_id,
+            record.user_id,
+            record.loan_id,
+            record.segment_name,
+            record.segment_value,
+            record.pd_value,
+            record.lgd_value,
+            record.ead_value,
+            record.ecl_value,
+            record.created_at
+        )
+    
+    return ecl_records
 
 
 async def get_ecl_by_segment(

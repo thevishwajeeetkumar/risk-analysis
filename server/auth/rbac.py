@@ -37,7 +37,7 @@ async def check_segment_permission(
     Check if a user has permission to access a segment.
     
     Args:
-        user: User object to check permissions for
+        user: User object to check permissions for (extract user_id and role immediately)
         segment_name: Name of the segment (e.g., "loan_intent", "age_group")
         permission_type: Type of permission ("read" or "write")
         db: Database session
@@ -45,12 +45,30 @@ async def check_segment_permission(
     Returns:
         True if user has permission, False otherwise
     """
+    # Extract user attributes immediately to avoid accessing detached User object
+    # This prevents greenlet errors when User object is from a different session
+    try:
+        user_id = user.user_id
+        user_role = user.role
+    except (AttributeError, Exception) as e:
+        # Catch any exception including MissingGreenlet if object is detached
+        # Fallback: try to extract using getattr
+        try:
+            user_id = getattr(user, 'user_id', None)
+            user_role = getattr(user, 'role', None)
+            if user_id is None or user_role is None:
+                logger.error(f"[RBAC] Cannot extract user_id or role from user object: {type(user)}, error: {e}")
+                return False
+        except Exception as inner_e:
+            logger.error(f"[RBAC] Error accessing user attributes: {inner_e}")
+            return False
+    
     # CROs have access to all segments
-    if user.role == "CRO":
+    if user_role == "CRO":
         return True
     
     # For Analysts, check specific permissions
-    return await crud.has_permission(db, user.user_id, segment_name, permission_type)
+    return await crud.has_permission(db, user_id, segment_name, permission_type)
 
 
 def require_segment_read(segment_name: str) -> Callable:
@@ -126,26 +144,51 @@ async def filter_ecl_by_permissions(
     Filter ECL results based on user's permissions.
     
     Args:
-        user: User to filter results for
+        user: User to filter results for (extract attributes immediately)
         ecl_results: List of ECL calculation results
         db: Database session
         
     Returns:
         Filtered list containing only segments user has access to
     """
+    # Extract user attributes IMMEDIATELY to avoid accessing detached User object
+    try:
+        user_id = user.user_id
+        user_role = user.role
+    except Exception as e:
+        try:
+            user_id = getattr(user, 'user_id', None)
+            user_role = getattr(user, 'role', None)
+            if user_id is None or user_role is None:
+                logger.error(f"[RBAC] Cannot extract user attributes in filter_ecl_by_permissions: {type(user)}, error: {e}")
+                return []
+        except Exception as inner_e:
+            logger.error(f"[RBAC] Error accessing user attributes in filter_ecl_by_permissions: {inner_e}")
+            return []
+    
     # CROs see all results
-    if user.role == "CRO":
+    if user_role == "CRO":
         return ecl_results
     
     # For Analysts, filter based on permissions
+    # Extract segment_name from each ECL object immediately while session is active
     filtered_results = []
+    from db import crud
     
     for ecl in ecl_results:
-        has_permission = await check_segment_permission(
-            user,
-            ecl.segment_name,
-            "read",
-            db
+        # Extract segment_name immediately to avoid accessing detached object
+        try:
+            segment_name = ecl.segment_name
+        except Exception as e:
+            logger.error(f"[RBAC] Error accessing segment_name from ECL object: {e}")
+            continue
+        
+        # Check permission using extracted user_id
+        has_permission = await crud.has_permission(
+            db,
+            user_id,
+            segment_name,
+            "read"
         )
         if has_permission:
             filtered_results.append(ecl)
@@ -167,15 +210,34 @@ async def filter_segments_dict_by_permissions(
     - Comprehensive logging for audit trail
     
     Args:
-        user: User to filter results for
+        user: User to filter results for (extract attributes immediately)
         segments_dict: Dictionary mapping segment names to data
         db: Database session
         
     Returns:
         Filtered dictionary containing only segments user has access to
     """
+    # Extract user attributes IMMEDIATELY to avoid accessing detached User object
+    # This prevents greenlet errors when User object is from a different session
+    try:
+        user_id = user.user_id
+        user_role = user.role
+        username = user.username
+    except Exception as e:
+        # Catch any exception including MissingGreenlet if object is detached
+        try:
+            user_id = getattr(user, 'user_id', None)
+            user_role = getattr(user, 'role', None)
+            username = getattr(user, 'username', None)
+            if user_id is None or user_role is None:
+                logger.error(f"[RBAC] Cannot extract user attributes from user object: {type(user)}, error: {e}")
+                return {}
+        except Exception as inner_e:
+            logger.error(f"[RBAC] Error accessing user attributes in filter_segments_dict_by_permissions: {inner_e}")
+            return {}
+    
     # CROs see all segments
-    if user.role == "CRO":
+    if user_role == "CRO":
         return segments_dict
     
     # Define core segments that Analysts should have default read access to
@@ -194,7 +256,7 @@ async def filter_segments_dict_by_permissions(
                 normalized_type = segment_type.lower().replace('_', '-').strip()
                 result = await db.execute(
                     select(Permission).where(
-                        Permission.user_id == user.user_id,
+                        Permission.user_id == user_id,
                         Permission.permission_type == "read",
                         func.lower(Permission.segment_name).like(f"%{normalized_type}%")
                     )
@@ -203,7 +265,7 @@ async def filter_segments_dict_by_permissions(
                 # Exact match only
                 result = await db.execute(
                     select(Permission).where(
-                        Permission.user_id == user.user_id,
+                        Permission.user_id == user_id,
                         Permission.permission_type == "read",
                         Permission.segment_name == segment_type
                     )
@@ -217,15 +279,15 @@ async def filter_segments_dict_by_permissions(
         if (
             not has_perm
             and RBAC_AUTO_GRANT_DEFAULTS
-            and user.role == "Analyst"
+            and user_role == "Analyst"
             and segment_type in CORE_SEGMENTS
         ):
-            logger.info(f"[RBAC] Auto-granting default 'read' for {user.username} on core segment '{segment_type}'")
+            logger.info(f"[RBAC] Auto-granting default 'read' for {username} on core segment '{segment_type}'")
             try:
                 # Insert new permission
                 await db.execute(
                     insert(Permission).values(
-                        user_id=user.user_id,
+                        user_id=user_id,
                         segment_name=segment_type,
                         permission_type="read"
                     )
@@ -240,7 +302,7 @@ async def filter_segments_dict_by_permissions(
                     logger.warning(
                         "[RBAC] Auto-grant blocked by constraint for %s on segment '%s'. "
                         "Verify database CHECK constraint allows this segment.",
-                        user.username,
+                        username,
                         segment_type,
                     )
                     has_perm = False
@@ -248,7 +310,7 @@ async def filter_segments_dict_by_permissions(
                     logger.warning(
                         "[RBAC] Integrity error auto-granting %s for %s: %s. Assuming permission exists.",
                         segment_type,
-                        user.username,
+                        username,
                         message,
                     )
                     has_perm = True
@@ -256,7 +318,7 @@ async def filter_segments_dict_by_permissions(
                 logger.warning(
                     "[RBAC] Failed to auto-grant %s for %s: %s",
                     segment_type,
-                    user.username,
+                    username,
                     e,
                 )
                 await db.rollback()
