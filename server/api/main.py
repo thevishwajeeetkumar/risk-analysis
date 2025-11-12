@@ -399,7 +399,7 @@ async def get_segments(
         # Apply RBAC filtering on dicts (more efficient and avoids session issues)
         # CROs see all segments, Analysts need permission checks
         if user_role != "CRO":
-            from db import crud
+            # crud is already imported at module level (line 34)
             filtered_segments_data = []
             for segment_dict in segments_data:
                 segment_type_name = segment_dict.get("segment_type")
