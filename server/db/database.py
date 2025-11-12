@@ -64,17 +64,23 @@ DB_ECHO = os.getenv("DB_ECHO", "false").lower() == "true"
 engine = create_async_engine(
     ASYNC_DATABASE_URL,
     echo=DB_ECHO,  # Controlled by environment variable
-    pool_pre_ping=True,  # Important for Neon connection pooling
+    pool_pre_ping=True,  # Important for Neon connection pooling - verifies connections before use
     pool_size=5,
     max_overflow=10,
     pool_recycle=3600,  # Recycle connections every hour
+    pool_timeout=30,  # Wait up to 30 seconds for a connection from the pool
     connect_args={
-        "ssl": True  # Enable SSL for Neon connections (asyncpg uses True/False)
+        "ssl": True,  # Enable SSL for Neon connections (asyncpg uses True/False)
+        "command_timeout": 10,  # Timeout for database commands (10 seconds)
     }
 )
 
 if DB_ECHO:
     print("[WARNING] Database echo mode is ENABLED (set DB_ECHO=false in production)")
+
+# Note: command_timeout is set in connect_args above (10 seconds)
+# This prevents long-running queries from blocking connections
+# For statement-level timeouts, we can set them per-query if needed
 
 # Create async session factory
 async_session_factory = async_sessionmaker(

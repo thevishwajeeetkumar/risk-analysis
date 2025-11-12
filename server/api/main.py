@@ -75,8 +75,36 @@ default_origins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://risk-frontend-snowy.vercel.app",
+    "https://risk-frontend-snowy.vercel.app/",  # With trailing slash for compatibility
 ]
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", ",".join(default_origins)).split(",")
+
+# Get origins from environment or use defaults
+env_origins = os.getenv("ALLOWED_ORIGINS", "")
+if env_origins:
+    # Parse environment variable and combine with defaults
+    env_origin_list = [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+    # Combine with defaults, removing duplicates
+    all_origins = list(set(default_origins + env_origin_list))
+else:
+    all_origins = default_origins
+
+# Normalize origins: ensure both with and without trailing slash are included
+# Browsers typically send origin without trailing slash, but we support both
+normalized_origins = set()
+for origin in all_origins:
+    origin = origin.strip()
+    if not origin:
+        continue
+    # Remove trailing slash for base version
+    origin_base = origin.rstrip("/")
+    # Add base version (most common - browsers send this)
+    normalized_origins.add(origin_base)
+    # Also add with trailing slash for compatibility
+    normalized_origins.add(origin_base + "/")
+
+# Convert to sorted list for consistent ordering
+ALLOWED_ORIGINS = sorted(list(normalized_origins))
+
 print(f"[INFO] CORS configured for origins: {ALLOWED_ORIGINS}")
 
 app.add_middleware(
@@ -85,6 +113,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],  # Expose all headers to frontend
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 
