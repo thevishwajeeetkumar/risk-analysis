@@ -28,9 +28,9 @@ class User(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     
     # Relationships
-    loans = relationship("Loan", back_populates="user")
-    ecl_calculations = relationship("ECLSegmentCalculation", back_populates="user")
-    permissions = relationship("Permission", back_populates="user")
+    loans = relationship("Loan", back_populates="user", lazy="noload")
+    ecl_calculations = relationship("ECLSegmentCalculation", back_populates="user", lazy="noload")
+    permissions = relationship("Permission", back_populates="user", lazy="noload")
 
 
 class Loan(Base):
@@ -66,8 +66,8 @@ class Loan(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     
     # Relationships
-    user = relationship("User", back_populates="loans")
-    ecl_calculations = relationship("ECLSegmentCalculation", back_populates="loan")
+    user = relationship("User", back_populates="loans", lazy="noload")
+    ecl_calculations = relationship("ECLSegmentCalculation", back_populates="loan", lazy="noload")
 
 
 class ECLSegmentCalculation(Base):
@@ -92,8 +92,8 @@ class ECLSegmentCalculation(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     
     # Relationships
-    user = relationship("User", back_populates="ecl_calculations")
-    loan = relationship("Loan", back_populates="ecl_calculations")
+    user = relationship("User", back_populates="ecl_calculations", lazy="noload")
+    loan = relationship("Loan", back_populates="ecl_calculations", lazy="noload")
 
 
 class Permission(Base):
@@ -108,7 +108,7 @@ class Permission(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     
     # Relationships
-    user = relationship("User", back_populates="permissions")
+    user = relationship("User", back_populates="permissions", lazy="noload")
     
     # Composite unique constraint (user can't have duplicate permissions for same segment)
     __table_args__ = (

@@ -13,7 +13,6 @@ from typing import List, Optional, Dict, Any
 
 from sqlalchemy import select, and_, or_, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from db.models import User, Loan, ECLSegmentCalculation, Permission
 
@@ -190,7 +189,6 @@ async def get_loan_by_id(db: AsyncSession, loan_id: int) -> Optional[Loan]:
     """Get loan by ID."""
     result = await db.execute(
         select(Loan)
-        .options(selectinload(Loan.user))
         .where(Loan.loan_id == loan_id)
     )
     return result.scalar_one_or_none()
