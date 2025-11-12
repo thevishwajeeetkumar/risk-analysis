@@ -88,7 +88,10 @@ else:
 # Pinecone Configuration
 # Note: Pinecone serverless (2025-04 API) does not support the embed.model parameter.
 # Embeddings are generated client-side using OpenAI and upserted as raw vectors.
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "developer-quickstart-py")
+# IMPORTANT: Uses a SINGLE shared index with namespaces for user isolation.
+# This prevents hitting the 5-index limit on free tier. Set PINECONE_INDEX_NAME
+# in environment variables to use a custom index name.
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "ecl-segments")
 PINECONE_DIMENSION = 1536  # Must match OpenAI text-embedding-3-small dimension
 PINECONE_METRIC = "cosine"
 PINECONE_CLOUD = "aws"

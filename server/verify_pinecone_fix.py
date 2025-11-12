@@ -22,7 +22,7 @@ from typing import Dict
 # Add Interview directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.rag_engine import ECLRagEngine, get_user_index
+from core.rag_engine import ECLRagEngine, get_shared_index, get_user_namespace
 from core.config import OPENAI_EMBEDDING_MODEL
 
 
@@ -236,20 +236,24 @@ def verify_pinecone_field_map():
         print_error("Embedding model not configured")
         return False
     
-    # Check the get_user_index function signature
+    # Check the get_shared_index and get_user_namespace functions
     import inspect
-    source = inspect.getsource(get_user_index)
-    
-    if 'field_map' in source:
-        print_success("field_map found in get_user_index() implementation")
-    else:
-        print_error("field_map NOT found in get_user_index() implementation")
-        return False
-    
-    if '"text": "page_content"' in source or "'text': 'page_content'" in source:
-        print_success("Correct field_map mapping: text -> page_content")
-    else:
-        print_error("field_map mapping not found or incorrect")
+    try:
+        shared_index_source = inspect.getsource(get_shared_index)
+        namespace_source = inspect.getsource(get_user_namespace)
+        
+        if 'PINECONE_INDEX_NAME' in shared_index_source:
+            print_success("get_shared_index uses shared index configuration")
+        else:
+            print_error("get_shared_index might not be using shared index")
+            return False
+        
+        if 'namespace' in shared_index_source.lower() or 'namespace' in namespace_source.lower():
+            print_success("Namespace-based user isolation found")
+        else:
+            print_info("Namespace-based isolation might not be implemented")
+    except Exception as e:
+        print_error(f"Could not verify index functions: {e}")
         return False
     
     return True

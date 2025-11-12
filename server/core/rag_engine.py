@@ -53,7 +53,9 @@ if PINECONE_API_KEY:
     try:
         pc = Pinecone(api_key=PINECONE_API_KEY)
         print("✅ Pinecone client initialized successfully")
-        print("   Indexes will be created per-user on first request")
+        print("   Using single shared index with namespaces for user isolation")
+        from core.config import PINECONE_INDEX_NAME
+        print(f"   Shared index name: {PINECONE_INDEX_NAME}")
     except Exception as e:
         print(f"⚠️  Warning: Pinecone initialization failed: {e}")
         print("   Pinecone features will not be available.")
@@ -63,26 +65,40 @@ else:
     pc = None
 
 
-def _sanitize_index_name(username: str) -> str:
-    index_name = username.lower().replace("_", "-").replace(" ", "-")
-    index_name = ''.join(c for c in index_name if c.isalnum() or c == '-')
-    index_name = index_name.strip('-')
-    return index_name[:45] or "default"
-
-
-def get_user_index(username: str):
+def _sanitize_namespace(username: str) -> str:
     """
-    Create/retrieve a Pinecone index dedicated to the given username.
+    Sanitize username to create a valid Pinecone namespace.
+    
+    Pinecone namespaces can contain alphanumeric characters, hyphens, and underscores.
+    Namespace length is limited to 63 characters.
+    
+    Args:
+        username: Username to sanitize
+        
+    Returns:
+        Sanitized namespace string
+    """
+    namespace = username.lower().replace(" ", "-")
+    # Keep only alphanumeric, hyphens, and underscores
+    namespace = ''.join(c for c in namespace if c.isalnum() or c in ['-', '_'])
+    namespace = namespace.strip('-_')
+    # Limit to 63 characters (Pinecone namespace limit)
+    return namespace[:63] or "default"
+
+
+def get_shared_index():
+    """
+    Get or create a single shared Pinecone index for all users.
     
     Uses serverless spec without embed model configuration to comply with
     Pinecone 2025-04 API requirements. OpenAI embeddings are generated
     client-side and upserted as raw vectors.
     
-    Args:
-        username: Username to create/retrieve index for
-        
+    Uses PINECONE_INDEX_NAME from config for the shared index name.
+    User data is isolated using namespaces (one namespace per user).
+    
     Returns:
-        Pinecone Index object
+        Pinecone Index object for the shared index
         
     Raises:
         HTTPException: If Pinecone is unavailable or index creation fails
@@ -93,15 +109,18 @@ def get_user_index(username: str):
             detail="Pinecone service is not available. Please configure PINECONE_API_KEY in .env file."
         )
 
-    index_name = _sanitize_index_name(username)
+    # Use shared index name from config
+    from core.config import PINECONE_INDEX_NAME
+    index_name = PINECONE_INDEX_NAME
     existing_indexes = [idx.name for idx in pc.list_indexes()]
 
     if index_name not in existing_indexes:
-        print(f"📝 Creating new Pinecone serverless index for user: {username}")
+        print(f"📝 Creating shared Pinecone serverless index")
         print(f"   Index name: {index_name}")
         print(f"   Dimension: {PINECONE_DIMENSION} (OpenAI text-embedding-3-small)")
         print(f"   Metric: {PINECONE_METRIC}")
         print(f"   Cloud: {PINECONE_CLOUD}, Region: {PINECONE_REGION}")
+        print(f"   Note: User data will be isolated using namespaces")
         
         try:
             # Create serverless index without embed model configuration
@@ -112,7 +131,7 @@ def get_user_index(username: str):
                 metric=PINECONE_METRIC,
                 spec=ServerlessSpec(cloud=PINECONE_CLOUD, region=PINECONE_REGION)
             )
-            print(f"✅ Index '{index_name}' created successfully")
+            print(f"✅ Shared index '{index_name}' created successfully")
             print("   Note: First request may take ~60 seconds while index initializes")
             
             # Create Index object and attach name for logging
@@ -123,8 +142,85 @@ def get_user_index(username: str):
             error_msg = str(e)
             print(f"[ERROR] Failed to create Pinecone index: {error_msg}")
             
-            # Provide detailed error guidance based on error type
-            if "INVALID_ARGUMENT" in error_msg:
+            # Try to parse JSON error message if present
+            import json
+            try:
+                # Check if error message contains JSON
+                if "HTTP response body:" in error_msg:
+                    # Extract JSON part from error message
+                    json_start = error_msg.find("{")
+                    json_end = error_msg.rfind("}") + 1
+                    if json_start >= 0 and json_end > json_start:
+                        json_str = error_msg[json_start:json_end]
+                        error_json = json.loads(json_str)
+                        if "error" in error_json:
+                            error_detail = error_json["error"]
+                            if "message" in error_detail:
+                                error_msg = error_detail["message"]
+            except (json.JSONDecodeError, ValueError, KeyError):
+                # If JSON parsing fails, use original error message
+                pass
+            
+            # Handle specific error cases
+            error_lower = error_msg.lower()
+            if "FORBIDDEN" in error_msg or "403" in error_msg or "forbidden" in error_lower:
+                # Check if error is due to index limit (multiple patterns)
+                is_index_limit = (
+                    "max serverless indexes" in error_lower or 
+                    "max serverless index" in error_lower or
+                    "reached the max" in error_lower or
+                    "you've reached the max" in error_lower or
+                    "you've reached the max serverless indexes" in error_lower or
+                    "max.*allowed" in error_lower or
+                    "use namespaces" in error_lower
+                )
+                if is_index_limit:
+                    # Check if we can reuse an existing index with matching dimension
+                    print(f"[WARNING] Index limit reached. Checking existing indexes for reuse...")
+                    reusable_index = None
+                    for existing_idx_name in existing_indexes:
+                        try:
+                            existing_idx = pc.Index(existing_idx_name)
+                            idx_stats = existing_idx.describe_index_stats()
+                            idx_dimension = idx_stats.get('dimension')
+                            if idx_dimension == PINECONE_DIMENSION:
+                                print(f"[INFO] Found reusable index '{existing_idx_name}' with dimension {idx_dimension}")
+                                reusable_index = existing_idx_name
+                                break
+                        except Exception as check_error:
+                            print(f"[WARNING] Could not check index '{existing_idx_name}': {check_error}")
+                            continue
+                    
+                    if reusable_index:
+                        print(f"[INFO] Reusing existing index '{reusable_index}' with namespaces")
+                        print(f"[WARNING] To use the intended index '{index_name}', delete unused indexes and restart")
+                        index = pc.Index(reusable_index)
+                        index._index_name = reusable_index
+                        return index
+                    else:
+                        # No reusable index found - provide clear instructions
+                        detail = (
+                            f"Pinecone index limit reached (5 indexes max on free tier). "
+                            f"Please delete unused indexes from your Pinecone dashboard to create the shared index '{index_name}'. "
+                            f"Alternatively, set PINECONE_INDEX_NAME environment variable to use an existing index name. "
+                            f"Current indexes: {', '.join(existing_indexes)}. "
+                            f"Error: {error_msg}"
+                        )
+                        raise HTTPException(
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=detail
+                        )
+                else:
+                    detail = (
+                        f"Pinecone access forbidden. "
+                        f"Please check your API key and account permissions. "
+                        f"Error: {error_msg}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=detail
+                    )
+            elif "INVALID_ARGUMENT" in error_msg:
                 if "dimension" in error_msg.lower():
                     detail = (
                         f"Pinecone index creation failed due to dimension mismatch. "
@@ -139,6 +235,10 @@ def get_user_index(username: str):
                     )
                 else:
                     detail = f"Pinecone index creation failed with invalid argument: {error_msg}"
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=detail
+                )
             elif "ALREADY_EXISTS" in error_msg:
                 detail = f"Index '{index_name}' already exists but was not detected. Retrying..."
                 print(f"[WARNING] {detail}")
@@ -146,18 +246,30 @@ def get_user_index(username: str):
                 return pc.Index(index_name)
             else:
                 detail = f"Failed to create Pinecone index '{index_name}': {error_msg}"
-            
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=detail
-            )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=detail
+                )
     else:
-        print(f"♻️  Using existing Pinecone index: {index_name}")
+        print(f"♻️  Using shared Pinecone index: {index_name}")
 
     # Create Index object and attach name for logging
     index = pc.Index(index_name)
     index._index_name = index_name  # Store name for logging purposes
     return index
+
+
+def get_user_namespace(username: str) -> str:
+    """
+    Get the namespace for a user in the shared Pinecone index.
+    
+    Args:
+        username: Username to get namespace for
+        
+    Returns:
+        Sanitized namespace string for the user
+    """
+    return _sanitize_namespace(username)
 
 
 class ECLRagEngine:
@@ -386,9 +498,12 @@ class ECLRagEngine:
 
         if split_docs:
             try:
-                print(f"[INFO] Getting/creating Pinecone index for user: {username}")
-                index = get_user_index(username)
-                print(f"[SUCCESS] Index ready: {index._index_name}")
+                # Get shared index and user namespace
+                print(f"[INFO] Getting shared Pinecone index for user: {username}")
+                index = get_shared_index()
+                namespace = get_user_namespace(username)
+                print(f"[SUCCESS] Shared index ready: {index._index_name}")
+                print(f"[INFO] Using namespace: {namespace} for user isolation")
                 
                 # Validate index dimension matches embedding model
                 try:
@@ -398,7 +513,7 @@ class ECLRagEngine:
                         error_msg = (
                             f"Dimension mismatch: Index '{index._index_name}' has dimension {index_dimension}, "
                             f"but {OPENAI_EMBEDDING_MODEL} produces {PINECONE_DIMENSION}-dimensional vectors. "
-                            f"Please delete the index or use a different username."
+                            f"Please recreate the index with correct dimension."
                         )
                         print(f"[ERROR] {error_msg}")
                         raise HTTPException(
@@ -421,35 +536,41 @@ class ECLRagEngine:
                     detail=f"Failed to initialize Pinecone index: {str(e)}"
                 )
             
-            # Probe index to check if vectors already exist (idempotency check)
+            # Probe index to check if vectors already exist in this namespace (idempotency check)
             # Sample a subset of IDs to check (up to 10 for efficiency)
             sample_ids = ids[:min(10, len(ids))]
             try:
-                fetch_result = index.fetch(ids=sample_ids)
+                fetch_result = index.fetch(ids=sample_ids, namespace=namespace)
                 existing_count = len(fetch_result.get('vectors', {}))
                 
                 if existing_count > 0:
-                    print(f"[IDEMPOTENCY] Found {existing_count} existing vectors (out of {len(sample_ids)} sampled)")
+                    print(f"[IDEMPOTENCY] Found {existing_count} existing vectors in namespace '{namespace}' (out of {len(sample_ids)} sampled)")
                     print(f"[IDEMPOTENCY] Skipping re-upsert to maintain idempotency")
                     return {
                         "documents": len(documents),
                         "chunks": len(split_docs),
                         "vectors_added": 0,
                         "status": "skipped",
-                        "reason": "vectors_already_exist"
+                        "reason": "vectors_already_exist",
+                        "namespace": namespace
                     }
                 else:
-                    print(f"[IDEMPOTENCY] No existing vectors found, proceeding with upsert")
+                    print(f"[IDEMPOTENCY] No existing vectors found in namespace '{namespace}', proceeding with upsert")
             except Exception as e:
-                print(f"[WARNING] Error checking for existing vectors: {e}")
+                print(f"[WARNING] Error checking for existing vectors in namespace '{namespace}': {e}")
                 print("[INFO] Proceeding with upsert")
             
-            # Proceed with upsert
+            # Proceed with upsert using namespace for user isolation
             try:
-                vector_store = PineconeVectorStore(index=index, embedding=self.embedding)
-                print(f"[INFO] Embedding {len(split_docs)} chunks from {len(documents)} documents into index '{index._index_name}'...")
+                # PineconeVectorStore supports namespace parameter for data isolation
+                vector_store = PineconeVectorStore(
+                    index=index, 
+                    embedding=self.embedding,
+                    namespace=namespace
+                )
+                print(f"[INFO] Embedding {len(split_docs)} chunks from {len(documents)} documents into index '{index._index_name}' namespace '{namespace}'...")
                 vector_store.add_documents(documents=split_docs, ids=ids)
-                print(f"[SUCCESS] Embedded {len(split_docs)} chunks to Pinecone")
+                print(f"[SUCCESS] Embedded {len(split_docs)} chunks to Pinecone namespace '{namespace}'")
             except Exception as e:
                 print(f"[ERROR] Failed to embed documents to Pinecone: {str(e)}")
                 raise HTTPException(
@@ -461,7 +582,8 @@ class ECLRagEngine:
                 "documents": len(documents),
                 "chunks": len(split_docs),
                 "vectors_added": len(split_docs),
-                "status": "success"
+                "status": "success",
+                "namespace": namespace
             }
         else:
             print("[WARNING] No documents available for embedding")
@@ -510,10 +632,20 @@ class ECLRagEngine:
         if file_id:
             print(f"[FILTER] Filtering results by file_id: {file_id}")
         
-        index = get_user_index(username)
-        vector_store = PineconeVectorStore(index=index, embedding=self.embedding)
+        # Get shared index and user namespace
+        index = get_shared_index()
+        namespace = get_user_namespace(username)
+        print(f"[INFO] Using shared index '{index._index_name}' with namespace '{namespace}'")
+        
+        # Create vector store with namespace for user isolation
+        vector_store = PineconeVectorStore(
+            index=index, 
+            embedding=self.embedding,
+            namespace=namespace
+        )
 
         # Create retriever for searching chunks with optional file_id filter
+        # Note: file_id filter is applied as metadata filter, namespace ensures user isolation
         search_kwargs = {"k": top_k}
         if file_id:
             search_kwargs["filter"] = {"file_id": file_id}
@@ -595,28 +727,36 @@ Answer:""",
     
     def clear_index(self, username: str, file_id: Optional[str] = None):
         """
-        Clear a user's Pinecone index or delete vectors for a specific file_id.
+        Clear a user's Pinecone namespace or delete vectors for a specific file_id.
         
         Args:
-            username: The user whose index should be cleared
+            username: The user whose namespace should be cleared
             file_id: If provided, only delete vectors for this file_id using metadata filtering
         """
-        index = get_user_index(username)
+        # Get shared index and user namespace
+        index = get_shared_index()
+        namespace = get_user_namespace(username)
+        print(f"[INFO] Using shared index '{index._index_name}' with namespace '{namespace}'")
         
         if file_id:
-            # Delete vectors filtered by file_id metadata
+            # Delete vectors filtered by file_id metadata within the namespace
             try:
-                print(f"[INFO] Deleting vectors for file_id: {file_id} from index: {index._index_name}")
-                # Pinecone delete with metadata filter
-                index.delete(filter={"file_id": file_id})
-                print(f"[SUCCESS] Deleted all vectors for file_id: {file_id}")
+                print(f"[INFO] Deleting vectors for file_id: {file_id} from namespace: {namespace}")
+                # Pinecone delete with metadata filter and namespace
+                index.delete(filter={"file_id": file_id}, namespace=namespace)
+                print(f"[SUCCESS] Deleted all vectors for file_id: {file_id} from namespace '{namespace}'")
             except Exception as e:
                 print(f"[ERROR] Failed to delete vectors for file_id {file_id}: {e}")
                 raise
         else:
-            # Delete all vectors in the index
-            index.delete(delete_all=True)
-            print(f"[SUCCESS] Cleared all vectors from index: {index._index_name}")
+            # Delete all vectors in the namespace (not the entire index)
+            try:
+                print(f"[INFO] Deleting all vectors from namespace: {namespace}")
+                index.delete(delete_all=True, namespace=namespace)
+                print(f"[SUCCESS] Cleared all vectors from namespace '{namespace}'")
+            except Exception as e:
+                print(f"[ERROR] Failed to clear namespace: {e}")
+                raise
 
 
 # Singleton instance
